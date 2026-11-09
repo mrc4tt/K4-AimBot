@@ -185,19 +185,8 @@ public partial class Plugin : BasePlugin, IPluginConfig<PluginConfig>
 
             if (state.Enabled)
             {
-                if (state.NoRecoil && player.PlayerPawn.Value?.IsValid == true)
-                {
-                    player.PlayerPawn.Value.AimPunchTickBase = 0;
-                    player.PlayerPawn.Value.AimPunchTickFraction = 0;
-
-                    player.PlayerPawn.Value.AimPunchAngle.X = 0;
-                    player.PlayerPawn.Value.AimPunchAngle.Y = 0;
-                    player.PlayerPawn.Value.AimPunchAngle.Z = 0;
-
-                    player.PlayerPawn.Value.AimPunchAngleVel.X = 0;
-                    player.PlayerPawn.Value.AimPunchAngleVel.Y = 0;
-                    player.PlayerPawn.Value.AimPunchAngleVel.Z = 0;
-                }
+                if (state.NoRecoil)
+                    ClearAimPunch(player.PlayerPawn.Value);
 
                 var maxDistance = state.SmoothAim ? Config.SilentAimDistance : Config.MaxDistance;
                 var maxFov = state.SmoothAim ? Config.SilentAimFov : Config.FieldOfView;
@@ -230,6 +219,32 @@ public partial class Plugin : BasePlugin, IPluginConfig<PluginConfig>
                 }
             }
         }
+    }
+
+    // Aim punch moved from CCSPlayerPawn (m_aimPunch*) to CCSPlayer_AimPunchServices in recent CS2/CSS builds.
+    private static void ClearAimPunch(CCSPlayerPawn? pawn)
+    {
+        if (pawn is null || !pawn.IsValid)
+            return;
+
+        var punch = pawn.AimPunchServices;
+        if (punch is null)
+            return;
+
+        punch.PredictableBaseTick = 0;
+        punch.PredictableBaseTickInterpAmount = 0;
+        punch.UnpredictableBaseTick = 0;
+
+        ZeroAngle(punch.PredictableBaseAngle);
+        ZeroAngle(punch.PredictableBaseAngleVel);
+        ZeroAngle(punch.UnpredictableBaseAngle);
+    }
+
+    private static void ZeroAngle(QAngle angle)
+    {
+        angle.X = 0;
+        angle.Y = 0;
+        angle.Z = 0;
     }
 
     private void ApplySmoothAim(CCSPlayerController player, PlayerAimbotState state, QAngle targetAngle, Vector playerEyePos, Vector predictedPos)
