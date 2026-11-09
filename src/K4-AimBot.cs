@@ -194,8 +194,7 @@ public partial class Plugin : BasePlugin, IPluginConfig<PluginConfig>
                 var target = FindClosestEnemy(player, maxDistance, maxFov, state);
                 if (target != null)
                 {
-                    var skeleton = target.PlayerPawn.Value!.CBodyComponent!.SceneNode!.GetSkeletonInstance();
-                    var targetHeadPos = GetBonePosition(skeleton, GetTargetBone(state.SmoothAim));
+                    var targetHeadPos = GetTargetPosition(target, GetTargetBone(state.SmoothAim));
                     var playerEyePos = GetEyePosition(player);
 
                     var predictedPos = PredictTargetPosition(player, target, targetHeadPos);
@@ -313,7 +312,7 @@ public partial class Plugin : BasePlugin, IPluginConfig<PluginConfig>
             if (distance > maxDistance)
                 continue;
 
-            var targetHeadPos = GetBonePosition(target.PlayerPawn.Value!.CBodyComponent!.SceneNode!.GetSkeletonInstance(), GetTargetBone(state.SmoothAim));
+            var targetHeadPos = GetTargetPosition(target, GetTargetBone(state.SmoothAim));
             var predictedPos = PredictTargetPosition(player, target, targetHeadPos);
             var aimAngle = CalculateAimAngle(playerEyePos, predictedPos, player.PlayerPawn.Value!.AbsVelocity!);
 
@@ -385,15 +384,49 @@ public partial class Plugin : BasePlugin, IPluginConfig<PluginConfig>
         return new Vector(origin.X, origin.Y, origin.Z + viewOffset);
     }
 
-    public static unsafe Vector GetBonePosition(CSkeletonInstance skeletonInstance, BoneNumber boneType)
+    // Where to aim on the target. Head and neck use the target's eye position (origin + view offset),
+    // which needs no engine internals and is always current. Other bones read the skeleton's bone
+    // array, but only when the result is plausibly on the target's body: the server computes bones
+    // lazily (GetBoneTransform runs setup-bones before reading), so the raw array can be stale,
+    // unset, or not in world space - which is what made the aim fly off into the sky.
+    private static Vector GetTargetPosition(CCSPlayerController target, BoneNumber bone)
+    {
+        var eyePos = GetEyePosition(target);
+        if (bone == BoneNumber.Head)
+            return eyePos;
+        if (bone == BoneNumber.Neck)
+            return new Vector(eyePos.X, eyePos.Y, eyePos.Z - 5f);
+
+        var pawn = target.PlayerPawn.Value!;
+        var origin = pawn.AbsOrigin!;
+        var skeleton = pawn.CBodyComponent?.SceneNode?.GetSkeletonInstance();
+        var bonePos = skeleton is null ? null : GetBonePosition(skeleton, bone);
+
+        if (bonePos is null)
+            return eyePos;
+
+        float dx = bonePos.X - origin.X, dy = bonePos.Y - origin.Y, dz = bonePos.Z - origin.Z;
+        bool onBody = dx * dx + dy * dy < 48f * 48f && dz > -8f && dz < 80f;
+        return onBody ? bonePos : eyePos;
+    }
+
+    // CModelState + 0x80 is the bone transform array (CTransform, 32 bytes: position first).
+    // Verified on build 14196: GetBoneTransform reads [skeleton + m_modelState(0x120) + 0x80] + 32 * bone.
+    public static unsafe Vector? GetBonePosition(CSkeletonInstance skeletonInstance, BoneNumber boneType)
     {
         var boneMatrixPointer = Unsafe.Read<IntPtr>((void*)(skeletonInstance.ModelState.Handle + 0x80));
-        var boneBaseAddr = boneMatrixPointer + (int)boneType * 32;
+        if (boneMatrixPointer == IntPtr.Zero)
+            return null;
 
-        return new Vector(
-            Unsafe.Read<float>((void*)(boneBaseAddr + 0)),
-            Unsafe.Read<float>((void*)(boneBaseAddr + 4)),
-            Unsafe.Read<float>((void*)(boneBaseAddr + 8)));
+        var boneBaseAddr = boneMatrixPointer + (int)boneType * 32;
+        float x = Unsafe.Read<float>((void*)(boneBaseAddr + 0));
+        float y = Unsafe.Read<float>((void*)(boneBaseAddr + 4));
+        float z = Unsafe.Read<float>((void*)(boneBaseAddr + 8));
+
+        if (!float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z))
+            return null;
+
+        return new Vector(x, y, z);
     }
 
     public void CommandSmoothAim(CCSPlayerController? player, CommandInfo command)
